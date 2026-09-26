@@ -1,0 +1,22 @@
+# Compiled Object files
+*.o
+
+# Executables
+server
+client
+
+# Logs
+*.log
+
+# Dataset (too large to push)
+dataset/
+
+# Client outputs
+Part1/client_out/
+Part2_Case1/client_out/
+Part2_Case2/client_out/
+Part2_Case2_Enhanced/client_out/
+
+# IDE/OS specific files
+.DS_Store
+.vscode/
