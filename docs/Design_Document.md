@@ -2,7 +2,7 @@
 
 ## 1. Cover Information / Project Title
 **Project Title:** Fault Tolerant Topic-based File Distribution Service
-**Group Numbers:** <XXX> and <YYY>
+**Group Numbers:** 100 and 113
 **Course:** IT305 LAB : Socket Programming Project
 
 ## 2. Problem Statement
