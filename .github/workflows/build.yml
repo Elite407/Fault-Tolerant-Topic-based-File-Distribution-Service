@@ -1,0 +1,23 @@
+name: C/C++ CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Build Part 1
+      run: |
+        if [ -f "Part1/Makefile" ]; then
+          echo "Found Part1/Makefile. Compiling..."
+          cd Part1 && make
+        else
+          echo "No Makefile in Part1 yet. Skipping build."
+        fi
