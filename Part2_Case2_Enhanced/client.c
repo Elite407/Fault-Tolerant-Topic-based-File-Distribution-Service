@@ -49,7 +49,7 @@ void *worker_thread(void *arg) {
 
     int success = 0;
     uint64_t session_id = 0;
-    uint32_t current_file_idx = 0xFFFFFFFF;
+    uint32_t current_file_idx = 0;
     uint64_t current_offset = 0;
     char current_filename[1024] = {0};
 
@@ -150,7 +150,7 @@ void *worker_thread(void *arg) {
                 uint8_t status = payload[0];
                 if (status == RESUME_REJECTED) {
                     session_id = 0;
-                    current_file_idx = 0xFFFFFFFF;
+                    current_file_idx = 0;
                     current_offset = 0;
                     current_filename[0] = '\0';
                     free(payload);
