@@ -173,6 +173,7 @@ int main(int argc, char *argv[]) {
 
     int port = atoi(argv[1]);
     strncpy(topics_root_dir, argv[2], sizeof(topics_root_dir) - 1);
+    topics_root_dir[sizeof(topics_root_dir) - 1] = '\0';
     failure_probability = atof(argv[3]);
     
     int server_sock = socket(AF_INET, SOCK_STREAM, 0);

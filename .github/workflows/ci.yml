@@ -1,0 +1,34 @@
+name: C/C++ CI
+
+on:
+  push:
+    branches: [ "main", "fix-bugs" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Build Part 1
+      run: |
+        cd Part1
+        make
+
+    - name: Build Part 2 Case 1
+      run: |
+        cd Part2_Case1
+        make
+
+    - name: Build Part 2 Case 2
+      run: |
+        cd Part2_Case2
+        make
+
+    - name: Build Part 2 Case 2 Enhanced
+      run: |
+        cd Part2_Case2_Enhanced
+        make

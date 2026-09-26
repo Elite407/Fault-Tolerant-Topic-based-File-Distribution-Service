@@ -52,7 +52,7 @@ int main(int argc, char *argv[]) {
     
     // Checkpoint State
     uint64_t session_id = 0;
-    uint32_t current_file_idx = 0xFFFFFFFF; // Set to -1 to trigger open on first file
+    uint32_t current_file_idx = 0; // Fixed from 0xFFFFFFFF
     uint64_t current_offset = 0;
     char current_filename[1024] = {0};
 

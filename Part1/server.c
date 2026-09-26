@@ -170,6 +170,7 @@ int main(int argc, char *argv[]) {
 
     int port = atoi(argv[1]);
     strncpy(topics_root_dir, argv[2], sizeof(topics_root_dir) - 1);
+    topics_root_dir[sizeof(topics_root_dir) - 1] = '\0';
     
     int is_multi = 1; // Default to multi-threaded
     if (argc >= 4 && strcmp(argv[3], "single") == 0) {
