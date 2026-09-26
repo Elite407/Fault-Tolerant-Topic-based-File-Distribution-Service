@@ -1,6 +1,6 @@
 # Final Report
 **Fault Tolerant Topic-based File Distribution Service**
-**Group:** XXX & YYY
+**Group:** 100 & 113
 
 ## 1. Abstract
 This report details the implementation of a topic-based file distribution system using POSIX pthreads and TCP sockets. We successfully developed a custom application protocol to transfer files, introduced synthetic faults to measure reliability, and implemented session management to recover from disconnections efficiently. Furthermore, we enhanced the architecture using parallel TCP connections to dramatically improve throughput.

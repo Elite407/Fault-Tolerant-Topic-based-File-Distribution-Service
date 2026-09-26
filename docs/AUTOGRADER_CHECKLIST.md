@@ -4,9 +4,9 @@ This checklist contains all requirements that are critical for automated evaluat
 If any of these fail, the autograder will reject or deduct marks for the submission.
 
 ## 1. Directory Structure
-- [ ] Submission is a compressed archive named `FinalSubmission_Group_<XXX>_<YYY>.zip` or `.tar.gz`
-- [ ] Root folder inside archive is `FinalSubmission_Group_<XXX>_<YYY>/`
-- [ ] Contains `FinalReport_Group_<XXX>_<YYY>.pdf`
+- [ ] Submission is a compressed archive named `FinalSubmission_Group_<100>_<113>.zip` or `.tar.gz`
+- [ ] Root folder inside archive is `FinalSubmission_Group_<100>_<113>/`
+- [ ] Contains `FinalReport_Group_<100>_<113>.pdf`
 - [ ] Contains `README.md`
 - [ ] Contains `Part1/`
 - [ ] Contains `Part2_Case1/`
