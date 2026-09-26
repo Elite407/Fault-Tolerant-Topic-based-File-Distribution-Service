@@ -25,7 +25,7 @@
 | REQ-21 | Client CLI: `./client <server_ip> <server_port> <topic> <output_dir>` | Interface | Yes | All | | | |
 | REQ-22 | Client writes files under `output_dir/topic/` | Interface | Yes | All | | | |
 | REQ-23 | `make` inside each Part folder produces `server` and `client` executables | Interface | Yes | All | | | |
-| REQ-24 | `FinalSubmission_Group_<XXX>_<YYY>.tar.gz` or `.zip` structure | Submission | Yes | All | | | |
+| REQ-24 | `FinalSubmission_Group_<100>_<113>.tar.gz` or `.zip` structure | Submission | Yes | All | | | |
 | REQ-25 | Design Document (Server data structures, message formats, fault injection, session protocol, enhancements, module structure, thought process) | Submission | Yes | All | | | |
 | REQ-26 | Final Report (Part I, Part II Cases separated, Cover page, Design, Performance Analysis) | Submission | Yes | All | | | |
 | REQ-27 | README file with build/run instructions for every case and fault-injection mechanism | Submission | Yes | All | | | |

@@ -15,7 +15,7 @@
 | Performance audit | PASS | Benchmarks successfully generated CSVs and graphs. |
 | Documentation audit | PASS | Heavy commenting and README instructions. |
 | Final report audit | PASS | Documented experimental outcomes realistically. |
-| Submission structure | PASS | Tarball `FinalSubmission_Group_XXX_YYY.tar.gz` created successfully. |
+| Submission structure | PASS | Tarball `FinalSubmission_Group_100_113.tar.gz` created successfully. |
 | Viva/Demo audit | PASS | Prepared documents are technically accurate to the codebase. |
 
 All constraints from the professor's PDF have been fully verified against the final codebase.
