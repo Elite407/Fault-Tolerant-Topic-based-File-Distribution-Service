@@ -4,7 +4,7 @@ on:
   push:
     branches: [ "main" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "pranamya" ]
 
 jobs:
   build:
@@ -16,8 +16,27 @@ jobs:
     - name: Build Part 1
       run: |
         if [ -f "Part1/Makefile" ]; then
-          echo "Found Part1/Makefile. Compiling..."
+          echo "Compiling Part 1..."
           cd Part1 && make
-        else
-          echo "No Makefile in Part1 yet. Skipping build."
+        fi
+
+    - name: Build Part 2 Case 1
+      run: |
+        if [ -f "Part2_Case1/Makefile" ]; then
+          echo "Compiling Part 2 Case 1..."
+          cd Part2_Case1 && make
+        fi
+
+    - name: Build Part 2 Case 2
+      run: |
+        if [ -f "Part2_Case2/Makefile" ]; then
+          echo "Compiling Part 2 Case 2..."
+          cd Part2_Case2 && make
+        fi
+
+    - name: Build Part 2 Case 2 Enhanced
+      run: |
+        if [ -f "Part2_Case2_Enhanced/Makefile" ]; then
+          echo "Compiling Part 2 Case 2 Enhanced..."
+          cd Part2_Case2_Enhanced && make
         fi
