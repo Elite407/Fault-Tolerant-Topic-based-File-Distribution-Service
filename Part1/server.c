@@ -39,6 +39,12 @@ void *handle_client(void *arg) {
         return NULL;
     }
 
+    if (header.length > 2048 || header.length == 0) {
+        send_error(client_sock, "Topic length invalid");
+        close(client_sock);
+        return NULL;
+    }
+
     char *topic = malloc(header.length + 1);
     if (recv_all(client_sock, topic, header.length) <= 0) {
         free(topic);
@@ -59,8 +65,9 @@ void *handle_client(void *arg) {
     snprintf(topic_dir, sizeof(topic_dir), "%s/%s", topics_root_dir, topic);
     free(topic);
 
-    DIR *dir = opendir(topic_dir);
-    if (!dir) {
+    struct dirent **namelist;
+    int num_entries = scandir(topic_dir, &namelist, NULL, alphasort);
+    if (num_entries < 0) {
         header.length = htonl(1);
         header.type = TYPE_TOPIC_RESPONSE;
         send_all(client_sock, &header, sizeof(header));
@@ -72,9 +79,8 @@ void *handle_client(void *arg) {
 
     // Count files
     uint32_t total_files = 0;
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != NULL) {
-        if (entry->d_type == DT_REG) {
+    for (int i = 0; i < num_entries; i++) {
+        if (namelist[i]->d_type == DT_REG) {
             total_files++;
         }
     }
@@ -88,19 +94,18 @@ void *handle_client(void *arg) {
     uint32_t net_total = htonl(total_files);
     send_all(client_sock, &net_total, 4);
 
-    // Rewind and send files
-    rewinddir(dir);
+    // Send files
     uint32_t file_index = 0;
-    while ((entry = readdir(dir)) != NULL) {
-        if (entry->d_type == DT_REG) {
+    for (int i = 0; i < num_entries; i++) {
+        if (namelist[i]->d_type == DT_REG) {
             char filepath[4096];
-            snprintf(filepath, sizeof(filepath), "%s/%s", topic_dir, entry->d_name);
+            snprintf(filepath, sizeof(filepath), "%s/%s", topic_dir, namelist[i]->d_name);
             
             struct stat st;
             if (stat(filepath, &st) == -1) continue;
 
             // Send FILE_META
-            uint16_t fname_len = strlen(entry->d_name);
+            uint16_t fname_len = strlen(namelist[i]->d_name);
             header.length = htonl(4 + 8 + 2 + fname_len);
             header.type = TYPE_FILE_META;
             send_all(client_sock, &header, sizeof(header));
@@ -112,7 +117,7 @@ void *handle_client(void *arg) {
             send_all(client_sock, &net_idx, 4);
             send_all(client_sock, &net_size, 8);
             send_all(client_sock, &net_fname_len, 2);
-            send_all(client_sock, entry->d_name, fname_len);
+            send_all(client_sock, namelist[i]->d_name, fname_len);
 
             // Send FILE_CHUNKs
             FILE *f = fopen(filepath, "rb");
@@ -144,7 +149,9 @@ void *handle_client(void *arg) {
             file_index++;
         }
     }
-    closedir(dir);
+    
+    for (int i = 0; i < num_entries; i++) free(namelist[i]);
+    free(namelist);
 
     // Send TOPIC_EOF
     header.length = htonl(0);
