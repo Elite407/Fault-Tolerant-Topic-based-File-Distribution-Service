@@ -1,4 +1,4 @@
-# Fault Tolerant Topic-based File Distribution Service
+# Fault Tolerant Topic-based File Distribution Service.
 
 ## 1. Project Overview
 This project implements a custom TCP socket-based file distribution system in C. It supports single/multi-threaded servers, a custom application protocol for framing binary file transfers, and robust fault-tolerance mechanisms including session management and parallel TCP connections.
