@@ -1,17 +1,24 @@
-name: C/C++ CI
+name: C/C++ CI & Automated Test Suite
 
 on:
   push:
-    branches: [ "main", "fix-bugs" ]
+    branches: [ "main", "rishi", "fix-bugs", "pranamya" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "rishi" ]
 
 jobs:
-  build:
+  build-and-test:
+    name: Build & Run Integration Tests
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Install System Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential netcat-openbsd
 
     - name: Build Part 1
       run: |
@@ -32,3 +39,23 @@ jobs:
       run: |
         cd Part2_Case2_Enhanced
         make
+
+    - name: Build FinalSubmission Directory
+      run: |
+        cd FinalSubmission_Group_100_113
+        for part in Part1 Part2_Case1 Part2_Case2 Part2_Case2_Enhanced; do
+          echo "Building $part..."
+          make -C "$part"
+        done
+
+    - name: Run Integration & Fault-Tolerance Tests
+      run: |
+        chmod +x ./tests/run_tests.sh
+        ./tests/run_tests.sh
+
+    - name: Upload Test Logs on Failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-logs
+        path: tests_tmp/*.log

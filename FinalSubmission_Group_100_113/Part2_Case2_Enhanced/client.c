@@ -27,6 +27,15 @@ void mkdir_p(const char *dir) {
     mkdir(tmp, S_IRWXU);
 }
 
+// Build a header with type, transaction_id, and payload length
+static inline msg_header_t make_header(uint8_t type, uint32_t txid, uint32_t payload_len) {
+    msg_header_t h;
+    h.type           = type;
+    h.transaction_id = htonl(txid);
+    h.length         = htonl(payload_len);
+    return h;
+}
+
 typedef struct {
     char server_ip[256];
     int port;
@@ -70,11 +79,11 @@ void *worker_thread(void *arg) {
         }
 
         msg_header_t header;
+        uint32_t txid = 1; // transaction_id for this session
         
         if (session_id == 0) {
             uint32_t topic_len = strlen(args->topic);
-            header.length = htonl(8 + topic_len);
-            header.type = TYPE_GET_REQUEST_WORKER;
+            header = make_header(TYPE_GET_REQUEST_WORKER, txid, 8 + topic_len);
             send_all(sock, &header, sizeof(header));
             
             uint32_t net_wid = htonl(args->worker_id);
@@ -85,8 +94,7 @@ void *worker_thread(void *arg) {
         } else {
             local_reconnects++;
             uint32_t topic_len = strlen(args->topic);
-            header.length = htonl(20 + topic_len);
-            header.type = TYPE_RECONNECT_REQ;
+            header = make_header(TYPE_RECONNECT_REQ, txid, 20 + topic_len);
             send_all(sock, &header, sizeof(header));
             
             uint64_t net_sid = htonll(session_id);
@@ -141,6 +149,11 @@ void *worker_thread(void *arg) {
                     error_occurred = 1;
                     break;
                 }
+                free(payload);
+                // §2 model: send MSG_START after receiving OK / TOPIC_RESPONSE
+                msg_header_t start = make_header(TYPE_MSG_START, txid, 0);
+                send_all(sock, &start, sizeof(start));
+                continue;
             }
             else if (header.type == TYPE_SESSION_CREATED) {
                 memcpy(&session_id, payload, 8);

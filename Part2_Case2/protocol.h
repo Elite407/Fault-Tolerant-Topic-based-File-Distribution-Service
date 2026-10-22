@@ -5,19 +5,20 @@
 #include <stddef.h>
 #include <sys/types.h>
 
-// Message Types
-#define TYPE_GET_REQUEST      0x01
-#define TYPE_TOPIC_RESPONSE   0x02
-#define TYPE_FILE_META        0x03
-#define TYPE_FILE_CHUNK       0x04
-#define TYPE_FILE_EOF         0x05
-#define TYPE_ERROR            0x06
-#define TYPE_TOPIC_EOF        0x07
+// Message Types  (aligned with instructor model design)
+#define TYPE_GET_REQUEST      0x01  // Client -> Server: topic request (with optional session_id for resume)
+#define TYPE_TOPIC_RESPONSE   0x02  // Server -> Client: OK / NOT FOUND + file list
+#define TYPE_FILE_META        0x03  // Server -> Client: per-file header (idx, size, name)
+#define TYPE_FILE_CHUNK       0x04  // Server -> Client: file data chunk
+#define TYPE_FILE_EOF         0x05  // Server -> Client: end of one file
+#define TYPE_ERROR            0x06  // Server -> Client: error with message
+#define TYPE_TOPIC_EOF        0x07  // Server -> Client: all files sent (CLOSE)
+#define TYPE_MSG_START        0x08  // Client -> Server: ready to receive files (carries session_id)
 
-// Case 2 Extensions
-#define TYPE_SESSION_CREATED  0x08
-#define TYPE_RECONNECT_REQ    0x09
-#define TYPE_RESUME_RESPONSE  0x0A
+// Case 2 Session Extensions
+#define TYPE_SESSION_CREATED  0x09  // Server -> Client: new session assigned, carries session_id
+#define TYPE_RECONNECT_REQ    0x0A  // Client -> Server: resume request (legacy; superseded by TYPE_GET_REQUEST with session_id)
+#define TYPE_RESUME_RESPONSE  0x0B  // Server -> Client: RESUME_ACCEPTED or RESUME_REJECTED
 
 // Status Codes
 #define STATUS_NOT_FOUND 0
@@ -29,10 +30,13 @@
 // Chunk Size for reading/sending files
 #define CHUNK_SIZE 8192
 
+// 9-byte header: type (1) + transaction_id (4) + length (4)
+// transaction_id is used to match request/response pairs
 #pragma pack(push, 1)
 typedef struct {
-    uint32_t length; // Length of payload (Network Byte Order)
-    uint8_t type;    // Message Type
+    uint8_t  type;           // Message Type
+    uint32_t transaction_id; // Request/response correlation ID (network byte order)
+    uint32_t length;         // Length of payload (Network Byte Order)
 } msg_header_t;
 #pragma pack(pop)
 
