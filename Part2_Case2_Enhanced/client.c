@@ -47,6 +47,7 @@ typedef struct {
     uint64_t *useful_bytes_received;
     uint32_t *reconnects;
     pthread_mutex_t *metrics_mutex;
+    int success; /* set to 1 by worker on successful completion, 0 on failure */
 } worker_args_t;
 
 void *worker_thread(void *arg) {
@@ -57,12 +58,13 @@ void *worker_thread(void *arg) {
     uint32_t local_reconnects = 0;
 
     int success = 0;
+    int topic_not_found = 0; /* permanent error – do not retry */
     uint64_t session_id = 0;
     uint32_t current_file_idx = 0;
     uint64_t current_offset = 0;
     char current_filename[1024] = {0};
 
-    while (!success) {
+    while (!success && !topic_not_found) {
         int sock = socket(AF_INET, SOCK_STREAM, 0);
         if (sock == -1) { perror("socket"); exit(1); }
 
@@ -138,14 +140,25 @@ void *worker_thread(void *arg) {
             }
 
             if (header.type == TYPE_ERROR) {
+                fprintf(stderr, "[Worker %u] Server Error: %.*s\n", args->worker_id, payload_len, payload);
                 free(payload);
                 error_occurred = 1;
                 break;
             } 
             else if (header.type == TYPE_TOPIC_RESPONSE) {
+                if (payload_len < 1) {
+                    fprintf(stderr, "[Worker %u][ERROR] Malformed TOPIC_RESPONSE: payload too short\n", args->worker_id);
+                    free(payload);
+                    error_occurred = 1;
+                    break;
+                }
                 uint8_t status = payload[0];
                 if (status == STATUS_NOT_FOUND) {
+                    /* Permanent error: topic does not exist. Do NOT retry. */
+                    fprintf(stderr, "[Worker %u][ERROR] Topic '%s' not found. Exiting.\n",
+                            args->worker_id, args->topic);
                     free(payload);
+                    topic_not_found = 1;
                     error_occurred = 1;
                     break;
                 }
@@ -172,8 +185,23 @@ void *worker_thread(void *arg) {
                 }
             }
             else if (header.type == TYPE_FILE_META) {
+                /* Validate: need at least 4+8+2 = 14 bytes before filename */
+                if (payload_len < 14) {
+                    fprintf(stderr, "[Worker %u][ERROR] Malformed FILE_META: payload_len=%u < 14\n",
+                            args->worker_id, payload_len);
+                    free(payload);
+                    error_occurred = 1;
+                    break;
+                }
                 uint32_t idx; memcpy(&idx, payload, 4); idx = ntohl(idx);
                 uint16_t nlen; memcpy(&nlen, payload + 12, 2); nlen = ntohs(nlen);
+                if ((uint32_t)(14 + nlen) > payload_len || nlen >= 1024) {
+                    fprintf(stderr, "[Worker %u][ERROR] Malformed FILE_META: nlen=%u overflows payload\n",
+                            args->worker_id, nlen);
+                    free(payload);
+                    error_occurred = 1;
+                    break;
+                }
                 char fname[1024];
                 memcpy(fname, payload + 14, nlen);
                 fname[nlen] = '\0';
@@ -182,15 +210,30 @@ void *worker_thread(void *arg) {
                     current_file_idx = idx;
                     current_offset = 0;
                     strncpy(current_filename, fname, sizeof(current_filename)-1);
+                    current_filename[sizeof(current_filename)-1] = '\0';
                     
                     char filepath[4096];
                     snprintf(filepath, sizeof(filepath), "%s/%s", args->topic_dir, fname);
                     
                     if (current_file) fclose(current_file);
                     current_file = fopen(filepath, "ab");
+                    if (!current_file) {
+                        perror("[ERROR] fopen");
+                        free(payload);
+                        error_occurred = 1;
+                        break;
+                    }
                 }
             }
             else if (header.type == TYPE_FILE_CHUNK) {
+                /* Validate: need at least 12 bytes of metadata (idx 4 + offset 8) */
+                if (payload_len < 12) {
+                    fprintf(stderr, "[Worker %u][ERROR] Malformed FILE_CHUNK: payload_len=%u < 12\n",
+                            args->worker_id, payload_len);
+                    free(payload);
+                    error_occurred = 1;
+                    break;
+                }
                 uint32_t idx; memcpy(&idx, payload, 4); idx = ntohl(idx);
                 uint64_t offset; memcpy(&offset, payload + 4, 8); offset = ntohll(offset);
                 uint32_t data_len = payload_len - 12;
@@ -201,6 +244,12 @@ void *worker_thread(void *arg) {
                     if (w == data_len) {
                         current_offset = offset + data_len;
                         local_useful += data_len;
+                    } else {
+                        fprintf(stderr, "[Worker %u][ERROR] fwrite failed: wrote %zu of %u bytes\n",
+                                args->worker_id, w, data_len);
+                        free(payload);
+                        error_occurred = 1;
+                        break;
                     }
                 }
             }
@@ -224,7 +273,10 @@ void *worker_thread(void *arg) {
         if (current_file) fclose(current_file);
         close(sock);
         
-        if (!success && error_occurred) {
+        if (!success && topic_not_found) {
+            /* Permanent error: topic does not exist. Do not retry. */
+            break;
+        } else if (!success && error_occurred) {
             usleep(100000); 
         } else if (!success) {
             break;
@@ -236,6 +288,9 @@ void *worker_thread(void *arg) {
     *(args->useful_bytes_received) += local_useful;
     *(args->reconnects) += local_reconnects;
     pthread_mutex_unlock(args->metrics_mutex);
+
+    /* Record whether this worker completed successfully */
+    args->success = success;
 
     return NULL;
 }
@@ -273,25 +328,63 @@ int main(int argc, char *argv[]) {
     pthread_t *threads = malloc(num_connections * sizeof(pthread_t));
     worker_args_t *args = malloc(num_connections * sizeof(worker_args_t));
 
+    /* Track which threads were successfully created */
+    int *thread_created = calloc(num_connections, sizeof(int));
+    if (!thread_created) { perror("calloc"); exit(1); }
+
     for (uint32_t i = 0; i < num_connections; i++) {
         strncpy(args[i].server_ip, server_ip, 255);
+        args[i].server_ip[255] = '\0';
         args[i].port = port;
         strncpy(args[i].topic, topic, 255);
+        args[i].topic[255] = '\0';
         strncpy(args[i].topic_dir, topic_dir, 2047);
+        args[i].topic_dir[2047] = '\0';
         args[i].worker_id = i;
         args[i].total_workers = num_connections;
         args[i].total_bytes_received = &total_bytes_received;
         args[i].useful_bytes_received = &useful_bytes_received;
         args[i].reconnects = &reconnects;
         args[i].metrics_mutex = &metrics_mutex;
+        args[i].success = 0;
         
-        pthread_create(&threads[i], NULL, worker_thread, &args[i]);
+        int rc = pthread_create(&threads[i], NULL, worker_thread, &args[i]);
+        if (rc != 0) {
+            fprintf(stderr, "[ERROR] pthread_create for worker %u failed: %s\n", i, strerror(rc));
+            thread_created[i] = 0;
+        } else {
+            thread_created[i] = 1;
+        }
     }
 
+    uint32_t failed_creates = 0;
     for (uint32_t i = 0; i < num_connections; i++) {
-        pthread_join(threads[i], NULL);
+        if (thread_created[i]) {
+            int jrc = pthread_join(threads[i], NULL);
+            if (jrc != 0) {
+                fprintf(stderr, "[ERROR] pthread_join for worker %u failed: %s\n", i, strerror(jrc));
+            }
+        } else {
+            failed_creates++;
+        }
     }
     
+    /* Aggregate worker results and report overall status */
+    uint32_t workers_succeeded = 0;
+    uint32_t workers_failed = 0;
+    for (uint32_t i = 0; i < num_connections; i++) {
+        if (thread_created[i]) {
+            if (args[i].success) {
+                workers_succeeded++;
+            } else {
+                workers_failed++;
+                fprintf(stderr, "[ERROR] Worker %u did not complete successfully.\n", i);
+            }
+        }
+    }
+    workers_failed += failed_creates;
+    
+    free(thread_created);
     free(threads);
     free(args);
 
@@ -303,6 +396,8 @@ int main(int argc, char *argv[]) {
 
     printf("\n--- Performance Metrics (Case 2 Enhanced) ---\n");
     printf("Connections           : %u\n", num_connections);
+    printf("Workers Succeeded     : %u\n", workers_succeeded);
+    printf("Workers Failed        : %u\n", workers_failed);
     printf("Total Bytes Received  : %lu\n", total_bytes_received);
     printf("Useful Bytes (Data)   : %lu\n", useful_bytes_received);
     printf("Redundant Bytes       : %lu\n", total_bytes_received - useful_bytes_received);
@@ -310,5 +405,11 @@ int main(int argc, char *argv[]) {
     printf("Time Taken            : %.4f seconds\n", time_taken);
     printf("Throughput (Useful)   : %.2f MB/s\n", transfer_rate);
 
+    if (workers_failed > 0) {
+        fprintf(stderr, "[RESULT] PARTIAL FAILURE: %u of %u workers did not complete.\n",
+                workers_failed, num_connections);
+        return 1;
+    }
+    printf("[RESULT] All %u workers completed successfully.\n", workers_succeeded);
     return 0;
 }

@@ -197,7 +197,14 @@ void *handle_client(void *arg) {
             if(send_all(client_sock, namelist[i]->d_name, fname_len) <= 0) goto cleanup;
 
             FILE *f = fopen(filepath, "rb");
-            if (f) {
+            if (!f) {
+                /* File became unreadable after stat. Send error and abort. */
+                char errmsg[256];
+                snprintf(errmsg, sizeof(errmsg), "Cannot open file '%s'", namelist[i]->d_name);
+                send_error(client_sock, errmsg, txid);
+                goto cleanup;
+            }
+            {
                 char buffer[CHUNK_SIZE];
                 size_t bytes_read;
                 uint64_t offset = 0;

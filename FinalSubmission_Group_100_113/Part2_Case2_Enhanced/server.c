@@ -236,9 +236,11 @@ void *handle_client(void *arg) {
         if (validate_session(client_sid, topic, &worker_id, &total_workers, &srv_file_idx, &srv_offset)) {
             is_resume  = 1;
             session_id = client_sid;
-            // Server's checkpoint takes precedence over client's claimed offset
-            resume_file_idx = (srv_file_idx > 0 || srv_offset > 0) ? srv_file_idx : client_file_idx;
-            resume_offset   = (srv_file_idx > 0 || srv_offset > 0) ? srv_offset   : client_offset;
+            /* The server's checkpoint is always authoritative.
+             * It reflects the last offset for which a chunk was successfully
+             * sent. Never fall back to unvalidated client-supplied values. */
+            resume_file_idx = srv_file_idx;
+            resume_offset   = srv_offset;
 
             msg_header_t rr = make_header(TYPE_RESUME_RESPONSE, txid, 1);
             send_all(client_sock, &rr, sizeof(rr));
@@ -340,7 +342,15 @@ void *handle_client(void *arg) {
             if(send_all(client_sock, namelist[i]->d_name, fname_len) <= 0) goto free_namelist;
 
             FILE *f = fopen(filepath, "rb");
-            if (f) {
+            if (!f) {
+                /* File became unreadable after stat. Report error and abort. */
+                char errmsg[256];
+                snprintf(errmsg, sizeof(errmsg), "Cannot open file '%s'", namelist[i]->d_name);
+                update_session_checkpoint(session_id, file_index, 0);
+                send_error(client_sock, errmsg, txid);
+                goto free_namelist;
+            }
+            {
                 char buffer[CHUNK_SIZE];
                 size_t bytes_read;
                 uint64_t offset = 0;

@@ -58,14 +58,15 @@ int main(int argc, char *argv[]) {
     uint32_t reconnects = 0;
 
     int success = 0;
+    int topic_not_found = 0; /* permanent error – do not retry */
     
     // Checkpoint State
     uint64_t session_id = 0;
-    uint32_t current_file_idx = 0; // Fixed from 0xFFFFFFFF
+    uint32_t current_file_idx = 0;
     uint64_t current_offset = 0;
     char current_filename[1024] = {0};
 
-    while (!success) {
+    while (!success && !topic_not_found) {
         int sock = socket(AF_INET, SOCK_STREAM, 0);
         if (sock == -1) {
             perror("socket");
@@ -155,10 +156,18 @@ int main(int argc, char *argv[]) {
                 break;
             } 
             else if (header.type == TYPE_TOPIC_RESPONSE) {
+                if (payload_len < 1) {
+                    fprintf(stderr, "[ERROR] Malformed TOPIC_RESPONSE: payload too short\n");
+                    free(payload);
+                    error_occurred = 1;
+                    break;
+                }
                 uint8_t status = payload[0];
                 if (status == STATUS_NOT_FOUND) {
-                    printf("Topic not found.\n");
+                    /* Permanent error: topic does not exist. Do NOT retry. */
+                    fprintf(stderr, "[ERROR] Topic '%s' not found on server. Exiting.\n", topic);
                     free(payload);
+                    topic_not_found = 1;
                     error_occurred = 1;
                     break;
                 }
@@ -187,8 +196,21 @@ int main(int argc, char *argv[]) {
                 }
             }
             else if (header.type == TYPE_FILE_META) {
+                /* Validate: need at least 4+8+2 = 14 bytes before filename */
+                if (payload_len < 14) {
+                    fprintf(stderr, "[ERROR] Malformed FILE_META: payload_len=%u < 14\n", payload_len);
+                    free(payload);
+                    error_occurred = 1;
+                    break;
+                }
                 uint32_t idx; memcpy(&idx, payload, 4); idx = ntohl(idx);
                 uint16_t nlen; memcpy(&nlen, payload + 12, 2); nlen = ntohs(nlen);
+                if ((uint32_t)(14 + nlen) > payload_len || nlen >= 1024) {
+                    fprintf(stderr, "[ERROR] Malformed FILE_META: nlen=%u overflows payload\n", nlen);
+                    free(payload);
+                    error_occurred = 1;
+                    break;
+                }
                 char fname[1024];
                 memcpy(fname, payload + 14, nlen);
                 fname[nlen] = '\0';
@@ -197,15 +219,29 @@ int main(int argc, char *argv[]) {
                     current_file_idx = idx;
                     current_offset = 0;
                     strncpy(current_filename, fname, sizeof(current_filename)-1);
+                    current_filename[sizeof(current_filename)-1] = '\0';
                     
                     char filepath[4096];
                     snprintf(filepath, sizeof(filepath), "%s/%s", topic_dir, fname);
                     
                     if (current_file) fclose(current_file);
                     current_file = fopen(filepath, "ab"); // Append binary safely
+                    if (!current_file) {
+                        perror("[ERROR] fopen");
+                        free(payload);
+                        error_occurred = 1;
+                        break;
+                    }
                 }
             }
             else if (header.type == TYPE_FILE_CHUNK) {
+                /* Validate: need at least 12 bytes of metadata (idx 4 + offset 8) */
+                if (payload_len < 12) {
+                    fprintf(stderr, "[ERROR] Malformed FILE_CHUNK: payload_len=%u < 12\n", payload_len);
+                    free(payload);
+                    error_occurred = 1;
+                    break;
+                }
                 uint32_t idx; memcpy(&idx, payload, 4); idx = ntohl(idx);
                 uint64_t offset; memcpy(&offset, payload + 4, 8); offset = ntohll(offset);
                 uint32_t data_len = payload_len - 12;
@@ -216,6 +252,11 @@ int main(int argc, char *argv[]) {
                     if (w == data_len) {
                         current_offset = offset + data_len;
                         useful_bytes_received += data_len;
+                    } else {
+                        fprintf(stderr, "[ERROR] fwrite failed: wrote %zu of %u bytes\n", w, data_len);
+                        free(payload);
+                        error_occurred = 1;
+                        break;
                     }
                 }
             }
@@ -241,7 +282,10 @@ int main(int argc, char *argv[]) {
         if (current_file) fclose(current_file);
         close(sock);
         
-        if (!success && error_occurred) {
+        if (!success && topic_not_found) {
+            /* Permanent error: topic does not exist. Do not retry. */
+            break;
+        } else if (!success && error_occurred) {
             usleep(100000); 
         } else if (!success) {
             break;

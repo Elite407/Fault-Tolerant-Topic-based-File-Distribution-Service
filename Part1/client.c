@@ -124,10 +124,20 @@ int main(int argc, char *argv[]) {
             continue;
         }
         else if (header.type == TYPE_FILE_META) {
+            /* Validate: need at least 4+8+2 = 14 bytes before the filename */
+            if (payload_len < 14) {
+                fprintf(stderr, "[ERROR] Malformed FILE_META: payload_len=%u < 14\n", payload_len);
+                free(payload);
+                break;
+            }
             uint32_t idx; memcpy(&idx, payload, 4); idx = ntohl(idx);
             uint64_t size; memcpy(&size, payload + 4, 8); size = ntohll(size);
             uint16_t nlen; memcpy(&nlen, payload + 12, 2); nlen = ntohs(nlen);
-
+            if ((uint32_t)(14 + nlen) > payload_len || nlen >= 1024) {
+                fprintf(stderr, "[ERROR] Malformed FILE_META: nlen=%u overflows payload\n", nlen);
+                free(payload);
+                break;
+            }
             char fname[1024];
             memcpy(fname, payload + 14, nlen);
             fname[nlen] = '\0';
@@ -140,9 +150,20 @@ int main(int argc, char *argv[]) {
             if (!current_file) perror("fopen");
         }
         else if (header.type == TYPE_FILE_CHUNK) {
+            /* Validate: need at least 12 bytes of metadata (idx 4 + offset 8) */
+            if (payload_len < 12) {
+                fprintf(stderr, "[ERROR] Malformed FILE_CHUNK: payload_len=%u < 12\n", payload_len);
+                free(payload);
+                break;
+            }
             uint32_t data_len = payload_len - 12;
             if (current_file) {
-                fwrite(payload + 12, 1, data_len, current_file);
+                size_t w = fwrite(payload + 12, 1, data_len, current_file);
+                if (w != data_len) {
+                    fprintf(stderr, "[ERROR] fwrite failed: wrote %zu of %u bytes\n", w, data_len);
+                    free(payload);
+                    break;
+                }
             }
             useful_bytes_received += data_len;
         }
