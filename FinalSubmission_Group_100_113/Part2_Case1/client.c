@@ -80,8 +80,9 @@ int main(int argc, char *argv[]) {
     uint32_t reconnects            = 0;
 
     int success = 0;
+    int topic_not_found = 0; /* permanent error – do not retry */
 
-    while (!success) {
+    while (!success && !topic_not_found) {
         int sock = socket(AF_INET, SOCK_STREAM, 0);
         if (sock == -1) { perror("socket"); exit(1); }
 
@@ -142,11 +143,21 @@ int main(int argc, char *argv[]) {
                 break;
             }
             else if (header.type == TYPE_TOPIC_RESPONSE) {
+                if (payload_len < 1) {
+                    fprintf(stderr, "[ERROR] Malformed TOPIC_RESPONSE: payload too short\n");
+                    free(payload);
+                    error_occurred = 1;
+                    break;
+                }
                 uint8_t status = payload[0];
                 if (status == STATUS_NOT_FOUND) {
-                    printf("Topic '%s' not found on server.\n", topic);
+                    /* Permanent error: topic does not exist on server.
+                     * Do NOT retry – set topic_not_found flag so the outer
+                     * while loop exits immediately after this connection. */
+                    fprintf(stderr, "[ERROR] Topic '%s' not found on server. Exiting.\n", topic);
                     free(payload);
-                    error_occurred = 1; // Terminate outer loop
+                    topic_not_found = 1; /* break outer while loop */
+                    error_occurred = 1;
                     break;
                 }
                 free(payload);
@@ -157,7 +168,20 @@ int main(int argc, char *argv[]) {
                 continue;
             }
             else if (header.type == TYPE_FILE_META) {
+                /* Validate: need at least 4+8+2 = 14 bytes before filename */
+                if (payload_len < 14) {
+                    fprintf(stderr, "[ERROR] Malformed FILE_META: payload_len=%u < 14\n", payload_len);
+                    free(payload);
+                    error_occurred = 1;
+                    break;
+                }
                 uint16_t nlen; memcpy(&nlen, payload + 12, 2); nlen = ntohs(nlen);
+                if ((uint32_t)(14 + nlen) > payload_len || nlen >= 1024) {
+                    fprintf(stderr, "[ERROR] Malformed FILE_META: nlen=%u overflows payload\n", nlen);
+                    free(payload);
+                    error_occurred = 1;
+                    break;
+                }
                 char fname[1024];
                 memcpy(fname, payload + 14, nlen);
                 fname[nlen] = '\0';
@@ -170,11 +194,24 @@ int main(int argc, char *argv[]) {
                 current_file = fopen(filepath, "wb");
             }
             else if (header.type == TYPE_FILE_CHUNK) {
+                /* Validate: need at least 12 bytes of metadata (idx 4 + offset 8) */
+                if (payload_len < 12) {
+                    fprintf(stderr, "[ERROR] Malformed FILE_CHUNK: payload_len=%u < 12\n", payload_len);
+                    free(payload);
+                    error_occurred = 1;
+                    break;
+                }
                 uint32_t data_len = payload_len - 12;
                 if (current_file) {
-                    fwrite(payload + 12, 1, data_len, current_file);
+                    size_t w = fwrite(payload + 12, 1, data_len, current_file);
+                    if (w != data_len) {
+                        fprintf(stderr, "[ERROR] fwrite failed: wrote %zu of %u bytes\n", w, data_len);
+                        free(payload);
+                        error_occurred = 1;
+                        break;
+                    }
+                    useful_bytes_received += data_len;
                 }
-                useful_bytes_received += data_len;
             }
             else if (header.type == TYPE_FILE_EOF) {
                 if (current_file) {
@@ -195,14 +232,16 @@ int main(int argc, char *argv[]) {
         if (current_file) fclose(current_file);
         close(sock);
 
-        if (!success && error_occurred) {
+        if (!success && topic_not_found) {
+            /* Permanent error: topic does not exist. Do not clean dir or retry. */
+            break;
+        } else if (!success && error_occurred) {
             reconnects++;
             // §4 model (Case 1 CRITICAL): wipe partial directory before retry
             clean_topic_dir(topic_dir);
             mkdir_p(topic_dir);
             usleep(100000); // 100ms delay before reconnect
         } else if (!success) {
-            // Unrecoverable error (e.g. topic not found)
             break;
         }
     }

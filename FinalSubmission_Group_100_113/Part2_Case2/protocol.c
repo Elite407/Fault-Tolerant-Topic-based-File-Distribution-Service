@@ -8,7 +8,7 @@ ssize_t send_all(int sockfd, const void *buf, size_t len) {
     size_t total = 0;
     const char *p = (const char *)buf;
     while (total < len) {
-        ssize_t n = send(sockfd, p + total, len - total, 0);
+        ssize_t n = send(sockfd, p + total, len - total, MSG_NOSIGNAL);
         if (n == -1) {
             if (errno == EINTR) continue;
             return -1;

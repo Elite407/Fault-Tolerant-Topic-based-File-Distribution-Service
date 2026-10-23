@@ -191,30 +191,37 @@ void *handle_client(void *arg) {
             // Send FILE_META
             uint16_t fname_len = strlen(namelist[i]->d_name);
             msg_header_t fmeta = make_header(TYPE_FILE_META, txid, 4 + 8 + 2 + fname_len);
-            send_all(client_sock, &fmeta, sizeof(fmeta));
+            if (send_all(client_sock, &fmeta, sizeof(fmeta)) <= 0) goto cleanup;
 
             uint32_t net_idx      = htonl(file_index);
             uint64_t net_size     = htonll((uint64_t)st.st_size);
             uint16_t net_fname_len = htons(fname_len);
 
-            send_all(client_sock, &net_idx, 4);
-            send_all(client_sock, &net_size, 8);
-            send_all(client_sock, &net_fname_len, 2);
-            send_all(client_sock, namelist[i]->d_name, fname_len);
+            if (send_all(client_sock, &net_idx, 4) <= 0) goto cleanup;
+            if (send_all(client_sock, &net_size, 8) <= 0) goto cleanup;
+            if (send_all(client_sock, &net_fname_len, 2) <= 0) goto cleanup;
+            if (send_all(client_sock, namelist[i]->d_name, fname_len) <= 0) goto cleanup;
 
             // Send FILE_CHUNKs
             FILE *f = fopen(filepath, "rb");
-            if (f) {
+            if (!f) {
+                /* File became unreadable after stat. Report error to client. */
+                char errmsg[256];
+                snprintf(errmsg, sizeof(errmsg), "Cannot open file '%s'", namelist[i]->d_name);
+                send_error(client_sock, errmsg, txid);
+                goto cleanup;
+            }
+            {
                 char buffer[CHUNK_SIZE];
                 size_t bytes_read;
                 uint64_t offset = 0;
                 while ((bytes_read = fread(buffer, 1, sizeof(buffer), f)) > 0) {
                     msg_header_t chunk = make_header(TYPE_FILE_CHUNK, txid, 4 + 8 + bytes_read);
-                    send_all(client_sock, &chunk, sizeof(chunk));
+                    if (send_all(client_sock, &chunk, sizeof(chunk)) <= 0) { fclose(f); goto cleanup; }
                     uint64_t net_offset = htonll(offset);
-                    send_all(client_sock, &net_idx, 4);
-                    send_all(client_sock, &net_offset, 8);
-                    send_all(client_sock, buffer, bytes_read);
+                    if (send_all(client_sock, &net_idx, 4) <= 0) { fclose(f); goto cleanup; }
+                    if (send_all(client_sock, &net_offset, 8) <= 0) { fclose(f); goto cleanup; }
+                    if (send_all(client_sock, buffer, bytes_read) <= 0) { fclose(f); goto cleanup; }
                     offset += bytes_read;
                 }
                 fclose(f);
@@ -222,8 +229,8 @@ void *handle_client(void *arg) {
 
             // Send FILE_EOF
             msg_header_t feof_hdr = make_header(TYPE_FILE_EOF, txid, 4);
-            send_all(client_sock, &feof_hdr, sizeof(feof_hdr));
-            send_all(client_sock, &net_idx, 4);
+            if (send_all(client_sock, &feof_hdr, sizeof(feof_hdr)) <= 0) goto cleanup;
+            if (send_all(client_sock, &net_idx, 4) <= 0) goto cleanup;
 
             file_index++;
         }
