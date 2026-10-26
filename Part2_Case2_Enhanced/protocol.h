@@ -15,6 +15,10 @@
 #define TYPE_TOPIC_EOF          0x07  // Server -> Client: all files sent (CLOSE)
 #define TYPE_MSG_START          0x08  // Client -> Server: ready to receive files (carries session_id + worker info)
 
+// Client-to-Server ACK: confirms data written to disk
+// Payload: file_idx(4) + offset(8) = 12 bytes
+#define TYPE_CLIENT_ACK         0x0D
+
 // Case 2 Enhanced Session / Worker Extensions
 #define TYPE_SESSION_CREATED    0x09  // Server -> Client: new session assigned, carries session_id
 #define TYPE_RECONNECT_REQ      0x0A  // Client -> Server: resume request
@@ -29,7 +33,7 @@
 #define RESUME_ACCEPTED  1
 
 // Chunk Size for reading/sending files
-#define CHUNK_SIZE 8192
+#define CHUNK_SIZE 65536
 
 // 9-byte header: type (1) + transaction_id (4) + length (4)
 // transaction_id is used to match request/response pairs

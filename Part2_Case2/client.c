@@ -5,7 +5,62 @@
 #include <arpa/inet.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <netinet/tcp.h>
 #include "protocol.h"
+
+#define CKPT_NAME ".tfdp.ckpt"
+#define ACK_INTERVAL 65536
+
+// Save checkpoint atomically (write to .tmp, then rename)
+void ckpt_save(const char *dir, uint64_t sid, const char *topic,
+               uint32_t file_idx, uint64_t offset) {
+    char path[2048], tmp[2048], body[512];
+    snprintf(path, sizeof(path), "%s/%s", dir, CKPT_NAME);
+    snprintf(tmp,  sizeof(tmp),  "%s/%s.tmp", dir, CKPT_NAME);
+    int n = snprintf(body, sizeof(body),
+        "TFDP-CKPT 1\nsid=%016lx\ntopic=%s\nidx=%u\noff=%lu\n",
+        sid, topic, file_idx, offset);
+    FILE *f = fopen(tmp, "w");
+    if (!f) return;
+    fwrite(body, 1, n, f);
+    fclose(f);
+    rename(tmp, path);
+}
+
+// Load checkpoint. Returns 1 if found, 0 otherwise.
+int ckpt_load(const char *dir, const char *topic,
+              uint64_t *sid, uint32_t *file_idx, uint64_t *offset) {
+    char path[2048], line[300];
+    snprintf(path, sizeof(path), "%s/%s", dir, CKPT_NAME);
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    if (!fgets(line, sizeof(line), f) || strncmp(line, "TFDP-CKPT", 9) != 0) {
+        fclose(f); return 0;
+    }
+    int seen = 0;
+    while (fgets(line, sizeof(line), f)) {
+        char *eq = strchr(line, '=');
+        char *nl = strchr(line, '\n');
+        if (!eq) continue;
+        if (nl) *nl = '\0';
+        *eq++ = '\0';
+        if (strcmp(line, "sid") == 0) { *sid = strtoull(eq, NULL, 16); seen |= 1; }
+        else if (strcmp(line, "topic") == 0) {
+            if (strcmp(eq, topic) != 0) { fclose(f); return 0; }
+            seen |= 2;
+        }
+        else if (strcmp(line, "idx") == 0) { *file_idx = (uint32_t)atol(eq); seen |= 4; }
+        else if (strcmp(line, "off") == 0) { *offset = strtoull(eq, NULL, 10); seen |= 8; }
+    }
+    fclose(f);
+    return (seen == 15) ? 1 : 0;
+}
+
+void ckpt_remove(const char *dir) {
+    char path[2048];
+    snprintf(path, sizeof(path), "%s/%s", dir, CKPT_NAME);
+    unlink(path);
+}
 
 void mkdir_p(const char *dir) {
     char tmp[2048];
@@ -58,13 +113,19 @@ int main(int argc, char *argv[]) {
     uint32_t reconnects = 0;
 
     int success = 0;
-    int topic_not_found = 0; /* permanent error – do not retry */
+    int topic_not_found = 0;
+    uint64_t bytes_since_ack = 0;
     
     // Checkpoint State
     uint64_t session_id = 0;
-    uint32_t current_file_idx = 0;
+    uint32_t current_file_idx = 0; // Fixed from 0xFFFFFFFF
     uint64_t current_offset = 0;
     char current_filename[1024] = {0};
+
+    if (ckpt_load(topic_dir, topic, &session_id, &current_file_idx, &current_offset)) {
+        printf("[CASE 2] Found existing checkpoint: session=%016lx, file=%u, offset=%lu\n",
+               session_id, current_file_idx, current_offset);
+    }
 
     while (!success && !topic_not_found) {
         int sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -88,6 +149,9 @@ int main(int argc, char *argv[]) {
             close(sock);
             continue;
         }
+
+        int nodelay_flag = 1;
+        setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &nodelay_flag, sizeof(nodelay_flag));
 
         msg_header_t header;
         uint32_t txid = 1; // transaction_id for this session
@@ -156,15 +220,8 @@ int main(int argc, char *argv[]) {
                 break;
             } 
             else if (header.type == TYPE_TOPIC_RESPONSE) {
-                if (payload_len < 1) {
-                    fprintf(stderr, "[ERROR] Malformed TOPIC_RESPONSE: payload too short\n");
-                    free(payload);
-                    error_occurred = 1;
-                    break;
-                }
                 uint8_t status = payload[0];
                 if (status == STATUS_NOT_FOUND) {
-                    /* Permanent error: topic does not exist. Do NOT retry. */
                     fprintf(stderr, "[ERROR] Topic '%s' not found on server. Exiting.\n", topic);
                     free(payload);
                     topic_not_found = 1;
@@ -186,6 +243,7 @@ int main(int argc, char *argv[]) {
                 uint8_t status = payload[0];
                 if (status == RESUME_REJECTED) {
                     printf("Server rejected resume. Restarting from scratch.\n");
+                    ckpt_remove(topic_dir);
                     session_id = 0;
                     current_file_idx = 0;
                     current_offset = 0;
@@ -196,52 +254,34 @@ int main(int argc, char *argv[]) {
                 }
             }
             else if (header.type == TYPE_FILE_META) {
-                /* Validate: need at least 4+8+2 = 14 bytes before filename */
-                if (payload_len < 14) {
-                    fprintf(stderr, "[ERROR] Malformed FILE_META: payload_len=%u < 14\n", payload_len);
-                    free(payload);
-                    error_occurred = 1;
-                    break;
-                }
                 uint32_t idx; memcpy(&idx, payload, 4); idx = ntohl(idx);
                 uint16_t nlen; memcpy(&nlen, payload + 12, 2); nlen = ntohs(nlen);
-                if ((uint32_t)(14 + nlen) > payload_len || nlen >= 1024) {
-                    fprintf(stderr, "[ERROR] Malformed FILE_META: nlen=%u overflows payload\n", nlen);
-                    free(payload);
-                    error_occurred = 1;
-                    break;
-                }
                 char fname[1024];
                 memcpy(fname, payload + 14, nlen);
                 fname[nlen] = '\0';
                 
-                if (idx != current_file_idx || current_file == NULL) {
+                if (idx != current_file_idx) {
                     current_file_idx = idx;
                     current_offset = 0;
                     strncpy(current_filename, fname, sizeof(current_filename)-1);
-                    current_filename[sizeof(current_filename)-1] = '\0';
                     
                     char filepath[4096];
                     snprintf(filepath, sizeof(filepath), "%s/%s", topic_dir, fname);
                     
                     if (current_file) fclose(current_file);
-                    current_file = fopen(filepath, "ab"); // Append binary safely
-                    if (!current_file) {
-                        perror("[ERROR] fopen");
-                        free(payload);
-                        error_occurred = 1;
-                        break;
+                    current_file = fopen(filepath, "wb");
+                } else if (current_file == NULL) {
+                    strncpy(current_filename, fname, sizeof(current_filename)-1);
+                    char filepath[4096];
+                    snprintf(filepath, sizeof(filepath), "%s/%s", topic_dir, fname);
+                    current_file = fopen(filepath, "r+b");
+                    if (!current_file) current_file = fopen(filepath, "wb");
+                    if (current_file && current_offset > 0) {
+                        fseek(current_file, current_offset, SEEK_SET);
                     }
                 }
             }
             else if (header.type == TYPE_FILE_CHUNK) {
-                /* Validate: need at least 12 bytes of metadata (idx 4 + offset 8) */
-                if (payload_len < 12) {
-                    fprintf(stderr, "[ERROR] Malformed FILE_CHUNK: payload_len=%u < 12\n", payload_len);
-                    free(payload);
-                    error_occurred = 1;
-                    break;
-                }
                 uint32_t idx; memcpy(&idx, payload, 4); idx = ntohl(idx);
                 uint64_t offset; memcpy(&offset, payload + 4, 8); offset = ntohll(offset);
                 uint32_t data_len = payload_len - 12;
@@ -252,26 +292,50 @@ int main(int argc, char *argv[]) {
                     if (w == data_len) {
                         current_offset = offset + data_len;
                         useful_bytes_received += data_len;
-                    } else {
-                        fprintf(stderr, "[ERROR] fwrite failed: wrote %zu of %u bytes\n", w, data_len);
-                        free(payload);
-                        error_occurred = 1;
-                        break;
+
+                        // ACK logic: send client ACK every ACK_INTERVAL
+                        bytes_since_ack += data_len;
+                        if (bytes_since_ack >= ACK_INTERVAL) {
+                            bytes_since_ack = 0;
+                            fflush(current_file);
+                            msg_header_t ack_hdr = make_header(TYPE_CLIENT_ACK, txid, 12);
+                            uint32_t net_ack_idx = htonl(current_file_idx);
+                            uint64_t net_ack_off = htonll(current_offset);
+                            char ack_buf[sizeof(msg_header_t) + 12];
+                            memcpy(ack_buf, &ack_hdr, sizeof(ack_hdr));
+                            memcpy(ack_buf + sizeof(ack_hdr), &net_ack_idx, 4);
+                            memcpy(ack_buf + sizeof(ack_hdr) + 4, &net_ack_off, 8);
+                            send_all(sock, ack_buf, sizeof(ack_buf));
+                            ckpt_save(topic_dir, session_id, topic, current_file_idx, current_offset);
+                        }
                     }
                 }
             }
             else if (header.type == TYPE_FILE_EOF) {
                 if (current_file) {
+                    fflush(current_file);
+                    msg_header_t ack_hdr = make_header(TYPE_CLIENT_ACK, txid, 12);
+                    uint32_t net_ack_idx = htonl(current_file_idx);
+                    uint64_t net_ack_off = htonll(current_offset);
+                    char ack_buf[sizeof(msg_header_t) + 12];
+                    memcpy(ack_buf, &ack_hdr, sizeof(ack_hdr));
+                    memcpy(ack_buf + sizeof(ack_hdr), &net_ack_idx, 4);
+                    memcpy(ack_buf + sizeof(ack_hdr) + 4, &net_ack_off, 8);
+                    send_all(sock, ack_buf, sizeof(ack_buf));
+
                     fclose(current_file);
                     current_file = NULL;
                 }
                 current_file_idx++;
                 current_offset = 0;
                 current_filename[0] = '\0';
+                bytes_since_ack = 0;
+                ckpt_save(topic_dir, session_id, topic, current_file_idx, current_offset);
             }
             else if (header.type == TYPE_TOPIC_EOF) {
                 printf("All files received successfully.\n");
                 success = 1;
+                ckpt_remove(topic_dir);
                 free(payload);
                 break;
             }
@@ -283,7 +347,6 @@ int main(int argc, char *argv[]) {
         close(sock);
         
         if (!success && topic_not_found) {
-            /* Permanent error: topic does not exist. Do not retry. */
             break;
         } else if (!success && error_occurred) {
             usleep(100000); 
