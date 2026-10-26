@@ -1,11 +1,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <netinet/tcp.h>
 #include "protocol.h"
 
 // -----------------------------------------------------------------------
@@ -59,7 +61,7 @@ void init_topic_table(const char *root_dir) {
 // Return directory path for the given topic, or NULL if not found
 const char *find_topic_directory(const char *topic) {
     for (int i = 0; i < topic_count; i++) {
-        if (strcmp(topic_table[i].topic, topic) == 0)
+        if (strcasecmp(topic_table[i].topic, topic) == 0)
             return topic_table[i].directory;
     }
     return NULL;
@@ -188,49 +190,55 @@ void *handle_client(void *arg) {
             struct stat st;
             if (stat(filepath, &st) == -1) continue;
 
-            // Send FILE_META
+            // Send FILE_META (coalesced)
             uint16_t fname_len = strlen(namelist[i]->d_name);
             msg_header_t fmeta = make_header(TYPE_FILE_META, txid, 4 + 8 + 2 + fname_len);
-            if (send_all(client_sock, &fmeta, sizeof(fmeta)) <= 0) goto cleanup;
-
-            uint32_t net_idx      = htonl(file_index);
-            uint64_t net_size     = htonll((uint64_t)st.st_size);
+            uint32_t net_idx       = htonl(file_index);
+            uint64_t net_size      = htonll((uint64_t)st.st_size);
             uint16_t net_fname_len = htons(fname_len);
 
-            if (send_all(client_sock, &net_idx, 4) <= 0) goto cleanup;
-            if (send_all(client_sock, &net_size, 8) <= 0) goto cleanup;
-            if (send_all(client_sock, &net_fname_len, 2) <= 0) goto cleanup;
-            if (send_all(client_sock, namelist[i]->d_name, fname_len) <= 0) goto cleanup;
-
-            // Send FILE_CHUNKs
-            FILE *f = fopen(filepath, "rb");
-            if (!f) {
-                /* File became unreadable after stat. Report error to client. */
-                char errmsg[256];
-                snprintf(errmsg, sizeof(errmsg), "Cannot open file '%s'", namelist[i]->d_name);
-                send_error(client_sock, errmsg, txid);
+            char meta_buf[sizeof(msg_header_t) + 14 + 1024];
+            size_t meta_len = sizeof(msg_header_t) + 14 + fname_len;
+            memcpy(meta_buf, &fmeta, sizeof(fmeta));
+            memcpy(meta_buf + sizeof(fmeta), &net_idx, 4);
+            memcpy(meta_buf + sizeof(fmeta) + 4, &net_size, 8);
+            memcpy(meta_buf + sizeof(fmeta) + 12, &net_fname_len, 2);
+            memcpy(meta_buf + sizeof(fmeta) + 14, namelist[i]->d_name, fname_len);
+            if (send_all(client_sock, meta_buf, meta_len) <= 0) {
                 goto cleanup;
             }
-            {
-                char buffer[CHUNK_SIZE];
-                size_t bytes_read;
-                uint64_t offset = 0;
-                while ((bytes_read = fread(buffer, 1, sizeof(buffer), f)) > 0) {
-                    msg_header_t chunk = make_header(TYPE_FILE_CHUNK, txid, 4 + 8 + bytes_read);
-                    if (send_all(client_sock, &chunk, sizeof(chunk)) <= 0) { fclose(f); goto cleanup; }
-                    uint64_t net_offset = htonll(offset);
-                    if (send_all(client_sock, &net_idx, 4) <= 0) { fclose(f); goto cleanup; }
-                    if (send_all(client_sock, &net_offset, 8) <= 0) { fclose(f); goto cleanup; }
-                    if (send_all(client_sock, buffer, bytes_read) <= 0) { fclose(f); goto cleanup; }
-                    offset += bytes_read;
+
+            // Send FILE_CHUNKs (coalesced, reading directly into send buffer)
+            FILE *f = fopen(filepath, "rb");
+            if (f) {
+                char *send_buf = malloc(sizeof(msg_header_t) + 12 + CHUNK_SIZE);
+                if (send_buf) {
+                    size_t bytes_read;
+                    uint64_t offset = 0;
+                    while ((bytes_read = fread(send_buf + sizeof(msg_header_t) + 12, 1, CHUNK_SIZE, f)) > 0) {
+                        msg_header_t chunk = make_header(TYPE_FILE_CHUNK, txid, 4 + 8 + bytes_read);
+                        uint64_t net_offset = htonll(offset);
+                        memcpy(send_buf, &chunk, sizeof(chunk));
+                        memcpy(send_buf + sizeof(chunk), &net_idx, 4);
+                        memcpy(send_buf + sizeof(chunk) + 4, &net_offset, 8);
+                        if (send_all(client_sock, send_buf, sizeof(msg_header_t) + 12 + bytes_read) <= 0) {
+                            break;
+                        }
+                        offset += bytes_read;
+                    }
+                    free(send_buf);
                 }
                 fclose(f);
             }
 
-            // Send FILE_EOF
+            // Send FILE_EOF (coalesced)
             msg_header_t feof_hdr = make_header(TYPE_FILE_EOF, txid, 4);
-            if (send_all(client_sock, &feof_hdr, sizeof(feof_hdr)) <= 0) goto cleanup;
-            if (send_all(client_sock, &net_idx, 4) <= 0) goto cleanup;
+            char feof_buf[sizeof(msg_header_t) + 4];
+            memcpy(feof_buf, &feof_hdr, sizeof(feof_hdr));
+            memcpy(feof_buf + sizeof(feof_hdr), &net_idx, 4);
+            if (send_all(client_sock, feof_buf, sizeof(feof_buf)) <= 0) {
+                goto cleanup;
+            }
 
             file_index++;
         }
@@ -301,6 +309,9 @@ int main(int argc, char *argv[]) {
             free(client_sock);
             continue;
         }
+
+        int nodelay_flag = 1;
+        setsockopt(*client_sock, IPPROTO_TCP, TCP_NODELAY, &nodelay_flag, sizeof(nodelay_flag));
 
         if (is_multi) {
             pthread_t thread;
