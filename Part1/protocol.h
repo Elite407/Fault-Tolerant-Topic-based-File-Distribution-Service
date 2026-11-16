@@ -20,7 +20,7 @@
 #define STATUS_FOUND     1
 
 // Chunk Size for reading/sending files
-#define CHUNK_SIZE 8192
+#define CHUNK_SIZE 65536
 
 // 5-byte header: type (1) + transaction_id (4) + length (4) = 9 bytes total
 // transaction_id is used to match request/response pairs

@@ -7,16 +7,23 @@ client
 
 # Logs
 *.log
+logs/
 
-# Dataset (too large to push)
+# Dataset and test temporary directories
 dataset/
+tests_tmp/
 
 # Client outputs
+client_out/
 Part1/client_out/
 Part2_Case1/client_out/
 Part2_Case2/client_out/
 Part2_Case2_Enhanced/client_out/
 
+# Checkpoint files
+*.tfdp.ckpt
+
 # IDE/OS specific files
 .DS_Store
 .vscode/
+
